@@ -11,6 +11,7 @@ import (
 	"github.com/amirhdev/crypto-trader/internal/notifier"
 	"github.com/amirhdev/crypto-trader/internal/scheduler"
 	"github.com/amirhdev/crypto-trader/internal/storage"
+	"github.com/spf13/viper"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -24,7 +25,7 @@ import (
 func Run(ctx context.Context, sched *scheduler.Scheduler, store *storage.Storage, cfg *config.Config, tg *notifier.Telegram) {
 	a := app.New()
 	w := a.NewWindow("Crypto Trader")
-	// Settings
+
 	telegramToken := widget.NewEntry()
 	telegramToken.SetText(cfg.Telegram.BotToken)
 	kucoinKey := widget.NewEntry()
@@ -38,10 +39,21 @@ func Run(ctx context.Context, sched *scheduler.Scheduler, store *storage.Storage
 		cfg.KuCoin.Key = kucoinKey.Text
 		cfg.KuCoin.Secret = kucoinSecret.Text
 		cfg.KuCoin.Passphrase = kucoinPass.Text
-		// Note: Save to .env? For simplicity, update in memory, persist if needed.
-		dialog.ShowInformation("Saved", "Settings updated (in memory)", w)
-		tg = notifier.New(cfg) // update notifier
+
+		viper.Set("TELEGRAM_BOT_TOKEN", cfg.Telegram.BotToken)
+		viper.Set("KUCOIN_API_KEY", cfg.KuCoin.Key)
+		viper.Set("KUCOIN_API_SECRET", cfg.KuCoin.Secret)
+		viper.Set("KUCOIN_API_PASSPHRASE", cfg.KuCoin.Passphrase)
+
+		if err := viper.WriteConfig(); err != nil {
+			dialog.ShowError(fmt.Errorf("failed to save .env: %w", err), w)
+			return
+		}
+
+		tg = notifier.New(cfg)
+		dialog.ShowInformation("Saved", "Settings saved to .env", w)
 	})
+
 	settings := container.NewVBox(
 		widget.NewLabel("Telegram Token"),
 		telegramToken,
@@ -53,12 +65,26 @@ func Run(ctx context.Context, sched *scheduler.Scheduler, store *storage.Storage
 		kucoinPass,
 		saveSettings,
 	)
+
+	recentList := binding.NewStringList()
+	refreshRecent := func() {
+		orders, err := store.GetAllOrders()
+		if err != nil {
+			return
+		}
+		var strs []string
+		for _, o := range orders {
+			strs = append(strs, fmt.Sprintf("%s | Wallet: %.2f%% | Sell: %.2f%% | At: %s", o.Coin, o.WalletPerc, o.SellPerc, o.ExecuteAt.Format(time.RFC3339)))
+		}
+		recentList.Set(strs)
+	}
+
 	// Create Order
 	coinName := widget.NewEntry()
 	walletPerc := widget.NewEntry()
 	sellPerc := widget.NewEntry()
-	date := widget.NewEntry()      // Use fyne-x/widget for date picker if needed, or text YYYY-MM-DD
-	timeEntry := widget.NewEntry() // HH:MM:SS
+	date := widget.NewEntry()
+	timeEntry := widget.NewEntry()
 	addOrder := widget.NewButton("Add Order", func() {
 		wp, err1 := strconv.ParseFloat(walletPerc.Text, 64)
 		sp, err2 := strconv.ParseFloat(sellPerc.Text, 64)
@@ -89,6 +115,7 @@ func Run(ctx context.Context, sched *scheduler.Scheduler, store *storage.Storage
 		dialog.ShowInformation("Success", "Order added", w)
 		refreshRecent()
 	})
+
 	createOrder := container.NewVBox(
 		widget.NewLabel("Coin Name (e.g. BTC-USDT)"),
 		coinName,
@@ -102,42 +129,50 @@ func Run(ctx context.Context, sched *scheduler.Scheduler, store *storage.Storage
 		timeEntry,
 		addOrder,
 	)
-	// Recent Orders
-	recentList := binding.NewStringList()
-	refreshRecent := func() {
-		orders, err := store.GetAllOrders()
-		if err != nil {
-			return
-		}
-		var strs []string
-		for _, o := range orders {
-			strs = append(strs, fmt.Sprintf("%s | Wallet: %.2f%% | Sell: %.2f%% | At: %s", o.Coin, o.WalletPerc, o.SellPerc, o.ExecuteAt.Format(time.RFC3339)))
-		}
-		recentList.Set(strs)
-	}
+
 	refreshRecent()
-	recent := widget.NewListWithData(recentList,
-		func() fyne.CanvasObject {
-			return container.NewHBox(widget.NewLabel(""), widget.NewButtonWithIcon("Delete", theme.DeleteIcon(), nil))
+	recent := widget.NewList(
+		func() int {
+			ords, _ := store.GetAllOrders()
+			return len(ords)
 		},
-		func(i binding.DataItem, o fyne.CanvasObject) {
-			str, _ := i.(binding.String).Get()
-			o.(*fyne.Container).Objects[0].(*widget.Label).SetText(str)
-			btn := o.(*fyne.Container).Objects[1].(*widget.Button)
+		func() fyne.CanvasObject {
+			return container.NewBorder(nil, nil, nil,
+				widget.NewButtonWithIcon("", theme.DeleteIcon(), nil),
+				widget.NewLabel(""),
+			)
+		},
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			ords, err := store.GetAllOrders()
+			if err != nil || i >= len(ords) {
+				return
+			}
+			ord := ords[i]
+
+			cont := o.(*fyne.Container)
+			cont.Objects[0].(*widget.Label).SetText(
+				fmt.Sprintf("%s | Buy: %.1f%% | Sell+: %.1f%% | %s",
+					ord.Coin, ord.WalletPerc, ord.SellPerc,
+					ord.ExecuteAt.Format("2006-01-02 15:04"),
+				))
+
+			btn := cont.Objects[1].(*widget.Button)
 			btn.OnTapped = func() {
-				// Extract ID from str? Or better, use index
-				orders, _ := store.GetAllOrders()
-				id := orders[recentList.Index(i)].ID()
-				sched.DeleteOrder(id)
-				refreshRecent()
+				if err := sched.DeleteOrder(ord.ID()); err != nil {
+					dialog.ShowError(err, w)
+				} else {
+					refreshRecent()
+				}
 			}
 		},
 	)
+
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Create Order", createOrder),
 		container.NewTabItem("Recent Orders", recent),
 		container.NewTabItem("Settings", settings),
 	)
+
 	w.SetContent(tabs)
 	w.Resize(fyne.NewSize(800, 600))
 	w.ShowAndRun()

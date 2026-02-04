@@ -49,7 +49,8 @@ func (s *Storage) SaveOrder(order domain.Order) error {
 
 func (s *Storage) GetAllOrders() ([]domain.Order, error) {
 	var orders []domain.Order
-	err := s.db.View(func(tx buntdb.Tx) error {
+
+	err := s.db.View(func(tx *buntdb.Tx) error {
 		return tx.AscendKeys("", func(key, value string) bool {
 			var ord domain.Order
 			if err := json.Unmarshal([]byte(value), &ord); err == nil {

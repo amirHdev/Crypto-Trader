@@ -6,155 +6,249 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"time"
 
 	"github.com/Kucoin/kucoin-universal-sdk/sdk/golang/pkg/api"
 	"github.com/Kucoin/kucoin-universal-sdk/sdk/golang/pkg/generate/account/account"
-	"github.com/Kucoin/kucoin-universal-sdk/sdk/golang/pkg/generate/market"
+	"github.com/Kucoin/kucoin-universal-sdk/sdk/golang/pkg/generate/spot/market"
 	"github.com/Kucoin/kucoin-universal-sdk/sdk/golang/pkg/generate/spot/order"
-	"github.com/Kucoin/kucoin-universal-sdk/sdk/golang/pkg/generate/websocket"
 	"github.com/Kucoin/kucoin-universal-sdk/sdk/golang/pkg/types"
+	"github.com/gorilla/websocket"
+
 	"github.com/amirhdev/crypto-trader/internal/config"
+	"github.com/rs/zerolog/log"
+)
+
+const (
+	TYPE     = "trade"
+	CURRENCY = "USDT"
 )
 
 type Client struct {
-	apiClient *api.ApiClient
-	spot      *api.SpotAPI
+	apiClient api.KucoinRestService
 }
 
 func New(cfg *config.Config) (*Client, error) {
-	key := types.NewApiKeyTransport(
-		cfg.KuCoin.Key,
-		cfg.KuCoin.Secret,
-		cfg.KuCoin.Passphrase,
-		types.GlobalApiEndpoint,
-	)
+	// Build client options (as shown in official docs)
+	optBuilder := types.ClientOptionBuilder{}
+	optBuilder.WithKey(cfg.KuCoin.Key)
+	optBuilder.WithSecret(cfg.KuCoin.Secret)
+	optBuilder.WithPassphrase(cfg.KuCoin.Passphrase)
+	optBuilder.WithBrokerEndpoint(types.GlobalApiEndpoint)
 
-	transport := types.NewTransport().
-		SetKeepAlive(true).
-		SetMaxIdleConnsPerHost(10)
+	// Transport options
+	transportBuilder := types.TransportOptionBuilder{}
+	transportBuilder.SetKeepAlive(true)
+	transportBuilder.SetMaxIdleConnsPerHost(10)
 
-	client := api.NewApiClient(key, transport)
+	// Create client
+	client := api.NewClient(optBuilder.Build())
+
 	return &Client{
-		apiClient: client,
-		spot:      client.Spot(),
+		apiClient: client.RestService(),
 	}, nil
 }
 
 func (c *Client) GetUSDTBalance(ctx context.Context) (float64, error) {
-	req := &account.GetSpotAccountListReq{Currency: "USDT", Type: "trade"}
-	resp, err := c.spot.Account().GetSpotAccountList(req, ctx)
+	req := account.NewGetSpotAccountListReqBuilder().
+		SetCurrency("USDT").
+		Build()
+
+	resp, err := c.apiClient.GetAccountService().GetAccountAPI().GetSpotAccountList(req, ctx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("get spot account list failed: %w", err)
 	}
+
 	if len(resp.Data) == 0 {
-		return 0, errors.New("no USDT account found")
+		return 0, errors.New("no USDT trade account found")
 	}
+
 	bal, err := strconv.ParseFloat(resp.Data[0].Available, 64)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("parse available balance failed: %w", err)
 	}
+
+	if bal <= 0 {
+		log.Warn().Float64("balance", bal).Msg("USDT balance is zero or negative")
+	}
+
 	return bal, nil
 }
 
 func (c *Client) PlaceMarketBuy(ctx context.Context, symbol string, funds float64) (string, error) {
-	clientOid := fmt.Sprintf("%d", rand.Int())
-	req := order.NewAddOrderReq(clientOid, "buy", symbol, "market").
-		SetFunds(fmt.Sprintf("%.2f", funds))
-	resp, err := c.spot.Order().AddOrder(req, ctx)
+	clientOid, _ := rand.Int(rand.Reader, big.NewInt(1_000_000_000_000_000_000))
+	oidStr := fmt.Sprintf("%d", clientOid)
+
+	req := order.NewAddOrderReq(oidStr, symbol, "buy")
+
+	resp, err := c.apiClient.GetSpotService().GetOrderAPI().AddOrder(req, ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("place market buy failed: %w", err)
 	}
-	return resp.Data.OrderID, nil
+
+	if resp.CommonResponse.Data == nil || resp.OrderId == "" {
+		return "", errors.New("empty order ID in response")
+	}
+
+	return resp.OrderId, nil
 }
 
 func (c *Client) PlaceMarketSell(ctx context.Context, symbol string, size float64) (string, error) {
-	clientOid := fmt.Sprintf("%d", rand.Int())
-	req := order.NewAddOrderReq(clientOid, "sell", symbol, "market").
-		SetSize(fmt.Sprintf("%.8f", size))
-	resp, err := c.spot.Order().AddOrder(req, ctx)
+	clientOid, _ := rand.Int(rand.Reader, big.NewInt(1_000_000_000_000_000_000))
+	oidStr := fmt.Sprintf("%d", clientOid)
+
+	req := order.NewAddOrderReq(oidStr, symbol, "sell")
+
+	resp, err := c.apiClient.GetSpotService().GetOrderAPI().AddOrder(req, ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("place market sell failed: %w", err)
 	}
-	return resp.Data.OrderID, nil
+
+	if resp.CommonResponse.Data == nil || resp.OrderId == "" {
+		return "", errors.New("empty order ID in response")
+	}
+
+	return resp.OrderId, nil
 }
 
 func (c *Client) GetTickerPrice(ctx context.Context, symbol string) (float64, error) {
-	req := &market.GetTickerReq{Symbol: symbol}
-	resp, err := c.spot.Market().GetTicker(req, ctx)
+	req := &market.GetTickerReq{Symbol: &symbol}
+
+	resp, err := c.apiClient.GetSpotService().GetMarketAPI().GetTicker(req, ctx)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("get ticker failed: %w", err)
 	}
-	price, err := strconv.ParseFloat(resp.Data.Price, 64)
+
+	if resp.CommonResponse.Data == nil || resp.Price == "" {
+		return 0, errors.New("no price in ticker response")
+	}
+
+	price, err := strconv.ParseFloat(resp.Price, 64)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("parse price failed: %w", err)
 	}
+
 	return price, nil
 }
 
+// ────────────────────────────────────────────────────────────────────────────────
+//  Public Ticker Websocket with reconnection + backoff
+// ────────────────────────────────────────────────────────────────────────────────
+
 func (c *Client) WatchPrice(ctx context.Context, symbol string, handler func(price float64)) error {
+	backoff := 5 * time.Second
+	maxBackoff := 60 * time.Second
+
+	for {
+		err := c.connectAndWatchPublicTicker(ctx, symbol, handler)
+		if err == nil || ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		log.Error().
+			Err(err).
+			Str("symbol", symbol).
+			Dur("backoff", backoff).
+			Msg("websocket disconnected → reconnecting")
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+			backoff = min(backoff*2, maxBackoff)
+		}
+	}
+}
+
+func (c *Client) connectAndWatchPublicTicker(ctx context.Context, symbol string, handler func(price float64)) error {
+	// 1. Get public websocket connection info
+	resp, err := c.apiClient.GetSpotService().GetMarketAPI().GetPublicToken(ctx)
+	if err != nil {
+		return fmt.Errorf("get public bullet failed: %w", err)
+	}
+
+	if len(resp.InstanceServers) == 0 {
+		return errors.New("no instance servers in public bullet response")
+	}
+
+	server := resp.InstanceServers[0]
+	url := fmt.Sprintf("%s?token=%s&connectId=%d",
+		server.Endpoint, resp.Token, time.Now().UnixMilli())
+
+	// 2. Dial websocket (use gorilla/websocket or SDK wrapper)
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		return fmt.Errorf("websocket dial failed: %w", err)
+	}
+	defer conn.Close()
+
+	// 3. Subscribe to ticker
+	sub := map[string]interface{}{
+		"id":       time.Now().UnixMilli(),
+		"type":     "subscribe",
+		"topic":    "/market/ticker:" + symbol,
+		"private":  false,
+		"response": true,
+	}
+	if err := conn.WriteJSON(sub); err != nil {
+		return fmt.Errorf("subscribe failed: %w", err)
+	}
+
+	// 4. Ping ticker
+	pingTicker := time.NewTicker(time.Duration(server.PingInterval) * time.Millisecond)
+	defer pingTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
+		case <-pingTicker.C:
+			ping := map[string]interface{}{
+				"id":   time.Now().UnixMilli(),
+				"type": "ping",
+			}
+			if err := conn.WriteJSON(ping); err != nil {
+				return fmt.Errorf("ping failed: %w", err)
+			}
+
 		default:
-			err := c.connectAndSubscribe(ctx, symbol, handler)
-			if err != nil {
-				time.Sleep(5 * time.Second)
+			var raw json.RawMessage
+			if err := conn.ReadJSON(&raw); err != nil {
+				return fmt.Errorf("read failed: %w", err)
+			}
+
+			var msg struct {
+				Type string          `json:"type"`
+				Data json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				log.Debug().Err(err).Msg("invalid message format → skipping")
+				continue
+			}
+
+			if msg.Type == "message" {
+				var ticker struct {
+					Price string `json:"price"`
+				}
+				if err := json.Unmarshal(msg.Data, &ticker); err == nil && ticker.Price != "" {
+					p, err := strconv.ParseFloat(ticker.Price, 64)
+					if err == nil {
+						handler(p)
+					} else {
+						log.Warn().Err(err).Str("priceStr", ticker.Price).Msg("price parse failed")
+					}
+				}
 			}
 		}
 	}
 }
 
-func (c *Client) connectAndSubscribe(ctx context.Context, symbol string, handler func(price float64)) error {
-	req := &websocket.GetBulletPrivateReq{}
-	tokenResp, err := c.apiClient.WebSocket().GetBulletPrivate(req, ctx)
-	if err != nil {
-		return err
+func min(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
 	}
-	wsClient := websocket.NewWebSocketClient(tokenResp.Data.Token, tokenResp.Data.InstanceServers[0].Endpoint)
-	messageChan, errorChan, err := wsClient.Connect()
-	if err != nil {
-		return err
-	}
-	subTopic := fmt.Sprintf("/market/ticker:%s", symbol)
-	sub := websocket.NewSubscribeMessage(subTopic, true)
-	if err := wsClient.Subscribe(sub); err != nil {
-		return err
-	}
-	ticker := time.NewTicker(tokenResp.Data.InstanceServers[0].PingInterval * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			wsClient.Close()
-			returctx.Err()
-		case ms := <-messageChan:
-			// Parse msg
-			var tickerData struct {
-				Type  string `json:"type"`
-				Topic string `json:"topic"`
-			}
-			// Parse msg
-			var tickerData struct {
-				Type    string `json:"type"`
-				Topic   string `json:"topic"`
-				Subject string `json:"subject"`
-				Data    struct {
-					Price string `json:"price"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal(msg, &tickerData); err == nil && tickerData.Type == "message" && tickerData.Subject == "trade.ticker" {
-				price, _ := strconv.ParseFloat(tickerData.Data.Price, 64)
-				handler(price)
-			}
-		case err := <-errorChan:
-			return err
-		case <-ticker.C:
-			ping := map[string]interface{}{"id": fmt.Sprintf("%d", time.Now().UnixMilli()), "type": "ping"}
-			pingBytes, _ := json.Marshal(ping)
-			wsClient.Send(pingBytes)
-		}
-	}
+	return b
 }
