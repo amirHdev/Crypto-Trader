@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/amirhdev/internal/domain"
+	"github.com/amirhdev/crypto-trader/internal/domain"
 
 	"github.com/tidwall/buntdb"
 )
@@ -49,9 +49,8 @@ func (s *Storage) SaveOrder(order domain.Order) error {
 
 func (s *Storage) GetAllOrders() ([]domain.Order, error) {
 	var orders []domain.Order
-
-	err := s.db.View(func(tx *buntdb.Tx) error {
-		return tx.AscendKeys("*", func(key, value string) bool {
+	err := s.db.View(func(tx buntdb.Tx) error {
+		return tx.AscendKeys("", func(key, value string) bool {
 			var ord domain.Order
 			if err := json.Unmarshal([]byte(value), &ord); err == nil {
 				orders = append(orders, ord)

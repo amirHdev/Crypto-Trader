@@ -3,9 +3,10 @@ package notifier
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
-	"github.com/amirdev/internal/config"
+	"github.com/amirhdev/crypto-trader/internal/config"
 
 	"github.com/rs/zerolog/log"
 )
@@ -28,7 +29,7 @@ func (t *Telegram) Send(msg string) {
 	if t.token == "" {
 		return
 	}
-
+	msg = strings.ReplaceAll(msg, "", "\\")
 	for _, chatID := range t.chatIDs {
 		url := fmt.Sprintf(
 			"https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s&parse_mode=Markdown",
@@ -36,7 +37,7 @@ func (t *Telegram) Send(msg string) {
 		)
 
 		resp, err := t.client.Get(url)
-		if err != nil || resp.StatusCode != 200 {
+		if err != nil || (resp != nil && resp.StatusCode != 200) {
 			log.Warn().Err(err).Str("chat", chatID).Msg("telegram send failed")
 		}
 		if resp != nil {

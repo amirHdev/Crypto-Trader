@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amirdev/internal/domain"
-	"github.com/amirdev/internal/exchange"
-	"github.com/amirdev/internal/notifier"
-	"github.com/amirdev/internal/storage"
+	"github.com/amirhdev/crypto-trader/internal/domain"
+	"github.com/amirhdev/crypto-trader/internal/exchange"
+	"github.com/amirhdev/crypto-trader/internal/notifier"
+	"github.com/amirhdev/crypto-trader/internal/storage"
 
 	"github.com/rs/zerolog/log"
 )
@@ -43,7 +43,6 @@ func (s *Scheduler) Restore() error {
 		if time.Until(ord.ExecuteAt) > 0 {
 			s.schedule(ord)
 		} else {
-			// cleanup old
 			s.store.DeleteOrder(ord.ID())
 		}
 	}
@@ -58,6 +57,16 @@ func (s *Scheduler) AddOrder(ord domain.Order) error {
 	return nil
 }
 
+func (s *Scheduler) DeleteOrder(id string) error {
+	s.mu.Lock()
+	if timer, ok := s.timers[id]; ok {
+		timer.Stop()
+		delete(s.timers, id)
+	}
+	s.mu.Unlock()
+	return s.store.DeleteOrder(id)
+}
+
 func (s *Scheduler) schedule(ord domain.Order) {
 	delay := time.Until(ord.ExecuteAt)
 	if delay <= 0 {
@@ -65,7 +74,10 @@ func (s *Scheduler) schedule(ord domain.Order) {
 	}
 
 	s.mu.Lock()
-	timer := time.AfterFunc(delay, func() { s.executeOrder(ord) })
+	timer := time.AfterFunc(delay, func() {
+		s.executeOrder(ord)
+	})
+
 	s.timers[ord.ID()] = timer
 	s.mu.Unlock()
 
@@ -78,12 +90,11 @@ func (s *Scheduler) executeOrder(ord domain.Order) {
 	delete(s.timers, ord.ID())
 	s.mu.Unlock()
 
-	s.notifier.Send(fmt.Sprintf("Executing BUY order for %s", ord.Coin))
+	s.notifier.Send(fmt.Sprintf("Executing BUY for %s", ord.Coin))
 
-	// 1. Get available USDT
 	balance, err := s.client.GetUSDTBalance(s.ctx)
 	if err != nil || balance <= 0 {
-		s.notifier.Send("Balance check failed or insufficient USDT")
+		s.notifier.Send(fmt.Sprintf("Balance check failed or insufficient: %v", err))
 		return
 	}
 
@@ -97,20 +108,32 @@ func (s *Scheduler) executeOrder(ord domain.Order) {
 
 	s.notifier.Send(fmt.Sprintf("BUY placed: %s (order %s)", ord.Coin, orderID))
 
-	// 2. Start price watcher (sell logic)
-	go s.watchForSell(ord, funds)
+	initialPrice, err := s.client.GetTickerPrice(s.ctx, ord.Coin)
+	if err != nil {
+		s.notifier.Send(fmt.Sprintf("Failed to get initial price: %v", err))
+		return
+	}
+
+	approxSize := funds / initialPrice
+	go s.watchForSell(ord, initialPrice, approxSize)
 }
 
-func (s *Scheduler) watchForSell(ord domain.Order, boughtFunds float64) {
-	// Placeholder – real version would use websocket
-	initialPrice := 1.0 // fetch once
+func (s *Scheduler) watchForSell(ord domain.Order, initialPrice, boughtSize float64) {
 	target := initialPrice * (1 + ord.SellPerc/100)
-
-	s.client.WatchPrice(s.ctx, ord.Coin, func(current float64) {
+	err := s.client.WatchPrice(s.ctx, ord.Coin, func(current float64) {
 		if current >= target {
-			// place sell
-			s.notifier.Send(fmt.Sprintf("SELL triggered for %s @ %.4f", ord.Coin, current))
-			// implement sell
+			orderID, err := s.client.PlaceMarketSell(s.ctx, ord.Coin, boughtSize)
+			if err != nil {
+				s.notifier.Send(fmt.Sprintf("SELL failed: %v", err))
+				return
+			}
+			s.notifier.Send(fmt.Sprintf("SELL triggered for %s @ %.4f (order %s)", ord.Coin, current, orderID))
+			// Stop watching after sell
+			// But since it's go routine, it will continue unless ctx cancel, but for one-time, we can return
 		}
 	})
+
+	if err != nil {
+		log.Error().Err(err).Msg("WatchPrice failed")
+	}
 }

@@ -9,17 +9,15 @@ import (
 
 type Config struct {
 	KuCoin struct {
-		Key        string `mapstructure:"api_key"`
-		Secret     string `mapstructure:"api_secret"`
-		Passphrase string `mapstructure:"api_passphrase"`
-	} `mapstructure:"kucoin"`
-
+		Key        string `mapstructure:"KUCOIN_API_KEY"`
+		Secret     string `mapstructure:"KUCOIN_API_SECRET"`
+		Passphrase string `mapstructure:"KUCOIN_API_PASSPHRASE"`
+	}
 	Telegram struct {
-		BotToken string   `mapstructure:"bot_token"`
-		ChatIDs  []string `mapstructure:"chat_ids"`
-	} `mapstructure:"telegram"`
-
-	DataDir string `mapstructure:"data_dir"`
+		BotToken string   `mapstructure:"TELEGRAM_BOT_TOKEN"`
+		ChatIDs  []string `mapstructure:"TELEGRAM_CHAT_IDS"`
+	}
+	DataDir string `mapstructure:"DATA_DIR"`
 }
 
 func Load() (*Config, error) {
