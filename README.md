@@ -1,4 +1,3 @@
-````markdown
 # Crypto Trader
 
 **KuCoin Scheduled Buy & Trailing Sell Bot**
@@ -56,7 +55,6 @@ Before you continue — please read this carefully:
    TELEGRAM_CHAT_IDS=123456789,987654321 # comma separated
    DATA_DIR=./data
    ```
-````
 
 - For sandbox testing, also set the sandbox base URL if your code supports it (check `/internal/config` or similar — many KuCoin SDKs have a `sandbox: true` flag).
 - Create a Telegram bot via @BotFather to get the token, and get your chat ID(s) by messaging @userinfobot or similar.
