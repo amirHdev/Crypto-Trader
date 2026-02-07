@@ -107,9 +107,3 @@ GNU General Public License v3.0
 You are **strongly discouraged** from using this software with real money in its current form.
 
 Contributions are welcome — especially pull requests that fix any of the critical issues listed above.
-
-Made with ❤️ in 2025–2026
-
-```
-
-```
